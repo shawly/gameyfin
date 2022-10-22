@@ -1,6 +1,11 @@
 name: Gameyfin Release
 
 on:
+  push:
+    # Publish `main` as Docker `edge` image.
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:      
       branch:
@@ -15,7 +20,7 @@ on:
         description: "Default version to use for new local working copy."
         required: true
         default: "X.Y.Z-SNAPSHOT"
-  
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -24,7 +29,7 @@ jobs:
       - name: Git checkout
         uses: actions/checkout@v3
         with:
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.branch || github.ref }}
         
       - name: Set up JDK
         uses: actions/setup-java@v3
@@ -34,17 +39,27 @@ jobs:
           cache: 'maven'
 
       - name: Configure Git User
+        if: github.event_name == 'workflow_dispatch'
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
       - name: Maven Release
+        if: github.event_name == 'workflow_dispatch'
         run: mvn release:prepare release:perform -B -s .maven_settings.xml -DreleaseVersion=${{ github.event.inputs.releaseVersion }} -DdevelopmentVersion=${{ github.event.inputs.developmentVersion }} -Darguments="-Dmaven.deploy.skip=true -Dmaven.test.skip=true -Dmaven.javadoc.skip=true"
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Maven Snapshot
+        if: github.event_name == 'push'
+        run: mvn --update-snapshots package -Darguments="-Dmaven.deploy.skip=true -Dmaven.test.skip=true -Dmaven.javadoc.skip=true"
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ github.token }}
      
       - name: Git tag
+        if: github.event_name == 'workflow_dispatch'
         uses: mathieudutour/github-tag-action@v6.0
         with:
           github_token: ${{ github.token }}
@@ -52,6 +67,7 @@ jobs:
           custom_tag: ${{ github.event.inputs.releaseVersion }}
           
       - name: Github Release
+        if: github.event_name == 'workflow_dispatch'
         uses: "marvinpinto/action-automatic-releases@v1.2.1"
         with:
           repo_token: ${{ github.token }}
@@ -62,17 +78,18 @@ jobs:
             backend/target/gameyfin-*.jar
             config/gameyfin.properties
       
-      - name: Docker meta
+      - name: Docker release meta
         id: meta
         uses: docker/metadata-action@v4
         with:
           images: |
-            grimsi/gameyfin
+            ${{ github.repository_owner }}/gameyfin
           tags: |
-            type=semver,pattern={{version}},value=${{ github.event.inputs.releaseVersion }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.inputs.releaseVersion }}
-            type=semver,pattern={{major}},value=${{ github.event.inputs.releaseVersion }}
-      
+            type=edge,branch=main,event=push
+            type=semver,pattern={{version}},value=${{ github.event.inputs.releaseVersion }},event=workflow_dispatch
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.inputs.releaseVersion }},event=workflow_dispatch
+            type=semver,pattern={{major}},value=${{ github.event.inputs.releaseVersion }},event=workflow_dispatch
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
       
@@ -97,6 +114,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           file: ./docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
